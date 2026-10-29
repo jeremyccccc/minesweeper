@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#efe9dd">
+  <title>扫雷 · Minefield</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main class="app">
+    <header class="hero">
+      <div>
+        <p class="eyebrow">CLASSIC PUZZLE</p>
+        <h1>扫雷<span class="title-dot">.</span></h1>
+        <p class="subtitle">清理每一块安全区域，小心藏在地下的雷。</p>
+      </div>
+      <div class="legend" aria-label="操作说明">
+        <span><i class="mouse left"></i> 点击翻开</span>
+        <span><i class="mouse right"></i> 右键插旗 / 展开数字</span>
+      </div>
+    </header>
+
+    <div class="account-bar">
+      <div id="account-info">当前为游客，登录后可记录成绩</div>
+      <button id="login-open" class="account-button">登录 / 切换用户</button>
+    </div>
+
+    <section class="game-card" aria-label="扫雷游戏">
+      <div class="toolbar">
+        <div class="difficulty" role="group" aria-label="选择难度">
+          <button class="level active" data-level="easy">初级</button>
+          <button class="level" data-level="medium">中级</button>
+          <button class="level" data-level="hard">高级</button>
+        </div>
+
+        <div class="stats">
+          <div class="stat">
+            <span class="stat-label">剩余雷数</span>
+            <strong id="mine-count">010</strong>
+          </div>
+          <button id="reset" class="reset" aria-label="重新开始" title="重新开始">🙂</button>
+          <div class="stat">
+            <span class="stat-label">用时</span>
+            <strong id="timer">000</strong>
+          </div>
+        </div>
+      </div>
+
+      <div class="board-wrap">
+        <div id="board" class="board" role="grid" aria-label="扫雷棋盘"></div>
+      </div>
+
+      <footer class="game-footer">
+        <p id="status" aria-live="polite">点击任意格子开始</p>
+        <p class="mobile-tip">手机上长按格子可以插旗</p>
+      </footer>
+    </section>
+
+    <section class="ranking-card" aria-labelledby="ranking-title">
+      <div class="ranking-head">
+        <div>
+          <p class="eyebrow">LOCAL RANKING</p>
+          <h2 id="ranking-title">最佳成绩</h2>
+        </div>
+        <div class="ranking-tabs" role="group" aria-label="排行榜范围">
+          <button class="ranking-tab active" data-range="week">本周</button>
+          <button class="ranking-tab" data-range="history">历史</button>
+        </div>
+      </div>
+      <div class="ranking-meta"><span id="ranking-level">初级</span><span>用时越短排名越高</span></div>
+      <ol id="ranking-list" class="ranking-list"></ol>
+    </section>
+  </main>
+
+  <dialog id="login-dialog" class="login-dialog">
+    <form id="login-form" method="dialog">
+      <button id="login-close" class="dialog-close" type="button" aria-label="关闭">×</button>
+      <p class="eyebrow">PLAYER PROFILE</p>
+      <h2>登录玩家</h2>
+      <p class="dialog-note">使用昵称和密码登录，成绩会通过云数据库跨设备同步。</p>
+      <label for="username">玩家昵称</label>
+      <input id="username" name="username" maxlength="16" autocomplete="username" placeholder="例如：扫雷高手" required>
+      <label for="password">密码</label>
+      <input id="password" name="password" type="password" minlength="6" maxlength="72" autocomplete="current-password" placeholder="至少 6 位" required>
+      <p id="login-error" class="login-error" aria-live="polite"></p>
+      <div class="auth-actions">
+        <button class="login-submit" type="submit" data-action="login">登录</button>
+        <button class="register-submit" type="submit" data-action="register">注册新用户</button>
+      </div>
+      <button id="logout" class="logout" type="button">退出当前用户</button>
+    </form>
+  </dialog>
+
+  <script src="game.js"></script>
+</body>
+</html>
