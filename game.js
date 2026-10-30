@@ -39,6 +39,8 @@ let revealed = 0;
 let pressTimer = null;
 let longPressed = false;
 let mouseHandledCell = null;
+let rightMouseHandledCell = null;
+let pressedCells = [];
 let activeUser = "";
 let rankingRange = "week";
 
@@ -157,6 +159,14 @@ function drawCellState(context, cell, x, y, size) {
   else if (cell.adjacent) drawSymbol(context, String(cell.adjacent), x, y, size, NUMBER_COLORS[cell.adjacent], .82);
 }
 
+function drawPressedCell(context, x, y, size) {
+  context.fillStyle = "#bdbdbd";
+  context.fillRect(x, y, size, size);
+  context.strokeStyle = "#929292";
+  context.lineWidth = 1;
+  context.strokeRect(x + .5, y + .5, size - 1, size - 1);
+}
+
 function cellSpriteKey(cell) {
   if (!cell.revealed) return cell.wrong ? "wrong" : cell.flagged ? "flagged" : "covered";
   if (cell.exploded) return "exploded";
@@ -183,13 +193,26 @@ function buildTileSprites(size, pixelRatio) {
   const sprites = new Map();
   const states = [
     ["covered", { revealed: false }],
+    ["pressed", { pressed: true }],
     ["flagged", { revealed: false, flagged: true }],
     ["wrong", { revealed: false, flagged: true, wrong: true }],
     ["mine", { revealed: true, mine: true }],
     ["exploded", { revealed: true, mine: true, exploded: true }]
   ];
   for (let adjacent = 0; adjacent <= 8; adjacent++) states.push([`n${adjacent}`, { revealed: true, adjacent }]);
-  states.forEach(([key, state]) => sprites.set(key, createTileSprite(state, size, pixelRatio)));
+  states.forEach(([key, state]) => {
+    if (state.pressed) {
+      const sprite = document.createElement("canvas");
+      sprite.width = Math.round(size * pixelRatio);
+      sprite.height = Math.round(size * pixelRatio);
+      const context = sprite.getContext("2d", { alpha: false });
+      context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
+      drawPressedCell(context, 0, 0, size);
+      sprites.set(key, sprite);
+    } else {
+      sprites.set(key, createTileSprite(state, size, pixelRatio));
+    }
+  });
   tileSpriteCache.set(cacheKey, sprites);
   tileSprites = sprites;
 }
@@ -199,6 +222,26 @@ function drawCell(cell) {
   const x = cell.col * size;
   const y = cell.row * size;
   boardContext.drawImage(tileSprites.get(cellSpriteKey(cell)), x, y, size, size);
+}
+
+function showPressPreview(cell) {
+  clearPressPreview();
+  if (!cell.revealed || !cell.adjacent) return;
+  const around = neighbors(cell.row, cell.col);
+  if (canChord(cell, around)) return;
+  pressedCells = around.filter(item => !item.revealed && !item.flagged);
+  const size = LEVELS[level].size;
+  const sprite = tileSprites.get("pressed");
+  pressedCells.forEach(item => {
+    boardContext.drawImage(sprite, item.col * size, item.row * size, size, size);
+  });
+}
+
+function clearPressPreview() {
+  if (!pressedCells.length) return;
+  const previous = pressedCells;
+  pressedCells = [];
+  previous.forEach(drawCell);
 }
 
 function renderBoard() {
@@ -216,6 +259,7 @@ function initGame() {
   seconds = 0;
   flags = 0;
   revealed = 0;
+  pressedCells = [];
   cells = Array.from({ length: config.rows }, (_, row) =>
     Array.from({ length: config.cols }, (_, col) => ({ row, col, mine: false, adjacent: 0, revealed: false, flagged: false }))
   );
@@ -345,10 +389,14 @@ function toggleFlag(cell) {
 function chord(cell) {
   if (!cell.revealed || !cell.adjacent || ended) return;
   const around = neighbors(cell.row, cell.col);
-  if (around.filter(item => item.flagged).length === cell.adjacent) {
+  if (canChord(cell, around)) {
     const changed = around.flatMap(item => reveal(item, true));
     if (!ended) changed.forEach(drawCell);
   }
+}
+
+function canChord(cell, around = neighbors(cell.row, cell.col)) {
+  return cell.revealed && cell.adjacent && around.filter(item => item.flagged).length === cell.adjacent;
 }
 
 function checkWin() {
@@ -408,8 +456,13 @@ boardEl.addEventListener("click", event => {
 
 boardEl.addEventListener("contextmenu", event => {
   event.preventDefault();
+  clearPressPreview();
   const cell = getCell(event);
   if (!cell) return;
+  if (cell === rightMouseHandledCell) {
+    rightMouseHandledCell = null;
+    return;
+  }
   cell.revealed ? chord(cell) : toggleFlag(cell);
 });
 
@@ -420,7 +473,14 @@ boardEl.addEventListener("pointerdown", event => {
     if (event.button === 0) {
       mouseHandledCell = cell;
       if (cell.flagged) toggleFlag(cell);
-      else cell.revealed ? chord(cell) : reveal(cell);
+      else if (!cell.revealed) reveal(cell);
+      else if (canChord(cell)) chord(cell);
+      else showPressPreview(cell);
+    } else if (event.button === 2) {
+      rightMouseHandledCell = cell;
+      if (!cell.revealed) toggleFlag(cell);
+      else if (canChord(cell)) chord(cell);
+      else showPressPreview(cell);
     }
     return;
   }
@@ -435,7 +495,12 @@ boardEl.addEventListener("pointerdown", event => {
 ["pointerup", "pointercancel", "pointerleave"].forEach(type => {
   boardEl.addEventListener(type, event => {
     clearTimeout(pressTimer);
-    if (event.pointerType === "mouse" && type !== "pointerup") mouseHandledCell = null;
+    if (event.pointerType !== "mouse") return;
+    clearPressPreview();
+    if (type !== "pointerup") {
+      mouseHandledCell = null;
+      rightMouseHandledCell = null;
+    }
   });
 });
 
