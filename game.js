@@ -116,6 +116,7 @@ function initGame() {
   cells = Array.from({ length: config.rows }, (_, row) =>
     Array.from({ length: config.cols }, (_, col) => ({ row, col, mine: false, adjacent: 0, revealed: false, flagged: false }))
   );
+  generateMinefield();
   timerEl.textContent = "000";
   mineCountEl.textContent = formatNumber(config.mines);
   resetEl.textContent = "🙂";
@@ -149,22 +150,38 @@ function neighbors(row, col) {
   return found;
 }
 
-function placeMines(safeCell) {
+function recalculateNumbers() {
+  cells.flat().forEach(cell => { cell.adjacent = 0; });
+  cells.flat().filter(cell => cell.mine).forEach(mine => {
+    neighbors(mine.row, mine.col).forEach(cell => { cell.adjacent++; });
+  });
+}
+
+function generateMinefield() {
   const { mines } = LEVELS[level];
-  const safeZone = new Set([safeCell, ...neighbors(safeCell.row, safeCell.col)]);
-  const choices = cells.flat().filter(cell => !safeZone.has(cell));
+  const choices = cells.flat();
   for (let i = choices.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
     [choices[i], choices[j]] = [choices[j], choices[i]];
   }
   choices.slice(0, mines).forEach(cell => { cell.mine = true; });
-  cells.flat().forEach(cell => {
-    cell.adjacent = neighbors(cell.row, cell.col).filter(item => item.mine).length;
+  recalculateNumbers();
+}
+
+function makeFirstClickSafe(safeCell) {
+  const safeZone = new Set([safeCell, ...neighbors(safeCell.row, safeCell.col)]);
+  const minesToMove = [...safeZone].filter(cell => cell.mine);
+  if (!minesToMove.length) return;
+  const destinations = cells.flat().filter(cell => !safeZone.has(cell) && !cell.mine);
+  minesToMove.forEach((mine, index) => {
+    mine.mine = false;
+    destinations[index].mine = true;
   });
+  recalculateNumbers();
 }
 
 function startGame(firstCell) {
-  placeMines(firstCell);
+  makeFirstClickSafe(firstCell);
   started = true;
   statusEl.textContent = "游戏进行中";
   timerId = setInterval(() => {
@@ -176,22 +193,34 @@ function startGame(firstCell) {
 function reveal(cell) {
   if (ended || cell.revealed || cell.flagged) return;
   if (!started) startGame(cell);
-  cell.revealed = true;
-  cell.el.classList.add("revealed");
-  revealed++;
-
   if (cell.mine) {
+    cell.revealed = true;
+    cell.el.classList.add("revealed");
     cell.el.classList.add("mine", "exploded");
     finish(false);
     return;
   }
 
-  cell.el.setAttribute("aria-label", cell.adjacent ? `周围有 ${cell.adjacent} 个雷` : "安全空格");
-  if (cell.adjacent) {
-    cell.el.textContent = cell.adjacent;
-    cell.el.classList.add(`n${cell.adjacent}`);
-  } else {
-    neighbors(cell.row, cell.col).forEach(reveal);
+  const queue = [cell];
+  const queued = new Set(queue);
+  for (let index = 0; index < queue.length; index++) {
+    const current = queue[index];
+    if (current.revealed || current.flagged || current.mine) continue;
+    current.revealed = true;
+    current.el.classList.add("revealed");
+    current.el.setAttribute("aria-label", current.adjacent ? `周围有 ${current.adjacent} 个雷` : "安全空格");
+    revealed++;
+    if (current.adjacent) {
+      current.el.textContent = current.adjacent;
+      current.el.classList.add(`n${current.adjacent}`);
+    } else {
+      neighbors(current.row, current.col).forEach(next => {
+        if (!queued.has(next) && !next.revealed && !next.flagged && !next.mine) {
+          queued.add(next);
+          queue.push(next);
+        }
+      });
+    }
   }
   checkWin();
 }
