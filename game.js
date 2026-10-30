@@ -7,6 +7,7 @@ const LEVELS = {
 };
 
 const boardEl = document.querySelector("#board");
+const boardContext = boardEl.getContext("2d", { alpha: false });
 const mineCountEl = document.querySelector("#mine-count");
 const timerEl = document.querySelector("#timer");
 const resetEl = document.querySelector("#reset");
@@ -105,6 +106,108 @@ function formatNumber(number) {
   return clamped < 0 ? `-${String(Math.abs(clamped)).padStart(2, "0")}` : String(clamped).padStart(3, "0");
 }
 
+const NUMBER_COLORS = ["", "#0000ff", "#008a00", "#d80000", "#000080", "#800000", "#008080", "#000000", "#666666"];
+let tileSprites = new Map();
+const tileSpriteCache = new Map();
+
+function drawCoveredCell(context, cell, x, y, size) {
+  context.fillStyle = "#c9c9c9";
+  context.fillRect(x, y, size, size);
+  context.fillStyle = "rgba(255,255,255,.82)";
+  context.beginPath();
+  context.moveTo(x, y + size);
+  context.lineTo(x, y);
+  context.lineTo(x + size, y);
+  context.lineTo(x + size - 2, y + 2);
+  context.lineTo(x + 2, y + 2);
+  context.lineTo(x + 2, y + size - 2);
+  context.fill();
+  context.fillStyle = "rgba(70,70,70,.38)";
+  context.beginPath();
+  context.moveTo(x, y + size);
+  context.lineTo(x + size, y + size);
+  context.lineTo(x + size, y);
+  context.lineTo(x + size - 2, y + 2);
+  context.lineTo(x + size - 2, y + size - 2);
+  context.lineTo(x + 2, y + size - 2);
+  context.fill();
+  if (cell.flagged) drawSymbol(context, "⚑", x, y, size, "#e00000", .7);
+  if (cell.wrong) drawSymbol(context, "×", x, y, size, "#d80000", .85);
+}
+
+function drawSymbol(context, symbol, x, y, size, color, scale = .75) {
+  context.fillStyle = color;
+  context.font = `900 ${Math.floor(size * scale)}px "Arial Black", "Segoe UI Symbol", sans-serif`;
+  context.textAlign = "center";
+  context.textBaseline = "middle";
+  context.fillText(symbol, x + size / 2, y + size / 2 + 1);
+}
+
+function drawCellState(context, cell, x, y, size) {
+  if (!cell.revealed) {
+    drawCoveredCell(context, cell, x, y, size);
+    return;
+  }
+  context.fillStyle = "#b4b4b4";
+  context.fillRect(x, y, size, size);
+  context.strokeStyle = "#8a8a8a";
+  context.lineWidth = 1;
+  context.strokeRect(x + .5, y + .5, size - 1, size - 1);
+  if (cell.mine) drawSymbol(context, "✹", x, y, size, "#2e3732", .82);
+  else if (cell.adjacent) drawSymbol(context, String(cell.adjacent), x, y, size, NUMBER_COLORS[cell.adjacent], .82);
+}
+
+function cellSpriteKey(cell) {
+  if (!cell.revealed) return cell.wrong ? "wrong" : cell.flagged ? "flagged" : "covered";
+  if (cell.exploded) return "exploded";
+  if (cell.mine) return "mine";
+  return `n${cell.adjacent}`;
+}
+
+function createTileSprite(cell, size, pixelRatio) {
+  const sprite = document.createElement("canvas");
+  sprite.width = Math.round(size * pixelRatio);
+  sprite.height = Math.round(size * pixelRatio);
+  const context = sprite.getContext("2d", { alpha: false });
+  context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
+  drawCellState(context, cell, 0, 0, size);
+  return sprite;
+}
+
+function buildTileSprites(size, pixelRatio) {
+  const cacheKey = `${size}@${pixelRatio}`;
+  if (tileSpriteCache.has(cacheKey)) {
+    tileSprites = tileSpriteCache.get(cacheKey);
+    return;
+  }
+  const sprites = new Map();
+  const states = [
+    ["covered", { revealed: false }],
+    ["flagged", { revealed: false, flagged: true }],
+    ["wrong", { revealed: false, flagged: true, wrong: true }],
+    ["mine", { revealed: true, mine: true }],
+    ["exploded", { revealed: true, mine: true, exploded: true }]
+  ];
+  for (let adjacent = 0; adjacent <= 8; adjacent++) states.push([`n${adjacent}`, { revealed: true, adjacent }]);
+  states.forEach(([key, state]) => sprites.set(key, createTileSprite(state, size, pixelRatio)));
+  tileSpriteCache.set(cacheKey, sprites);
+  tileSprites = sprites;
+}
+
+function drawCell(cell) {
+  const size = LEVELS[level].size;
+  const x = cell.col * size;
+  const y = cell.row * size;
+  boardContext.drawImage(tileSprites.get(cellSpriteKey(cell)), x, y, size, size);
+}
+
+function renderBoard() {
+  const { rows, cols, size } = LEVELS[level];
+  boardContext.fillStyle = "#a6a6a6";
+  boardContext.fillRect(0, 0, cols * size, rows * size);
+  cells.flat().forEach(drawCell);
+}
+
 function initGame() {
   clearInterval(timerId);
   const config = LEVELS[level];
@@ -116,29 +219,28 @@ function initGame() {
   cells = Array.from({ length: config.rows }, (_, row) =>
     Array.from({ length: config.cols }, (_, col) => ({ row, col, mine: false, adjacent: 0, revealed: false, flagged: false }))
   );
+  cells.flat().forEach(cell => neighbors(cell.row, cell.col));
   generateMinefield();
   timerEl.textContent = "000";
   mineCountEl.textContent = formatNumber(config.mines);
   resetEl.textContent = "🙂";
   statusEl.textContent = "点击任意格子开始";
-  boardEl.replaceChildren();
-  boardEl.style.gridTemplateColumns = `repeat(${config.cols}, var(--cell-size))`;
-  boardEl.style.setProperty("--cell-size", `${config.size}px`);
-
-  cells.flat().forEach(cell => {
-    const button = document.createElement("button");
-    button.className = "cell";
-    button.type = "button";
-    button.setAttribute("role", "gridcell");
-    button.setAttribute("aria-label", `第 ${cell.row + 1} 行，第 ${cell.col + 1} 列，未翻开`);
-    button.dataset.row = cell.row;
-    button.dataset.col = cell.col;
-    cell.el = button;
-    boardEl.append(button);
-  });
+  const pixelRatio = 1;
+  const width = config.cols * config.size;
+  const height = config.rows * config.size;
+  boardEl.width = Math.round(width * pixelRatio);
+  boardEl.height = Math.round(height * pixelRatio);
+  boardEl.style.width = `${width}px`;
+  boardEl.style.height = `${height}px`;
+  boardContext.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
+  boardContext.imageSmoothingEnabled = false;
+  buildTileSprites(config.size, pixelRatio);
+  renderBoard();
 }
 
 function neighbors(row, col) {
+  const origin = cells[row]?.[col];
+  if (origin?.nearby) return origin.nearby;
   const found = [];
   for (let dr = -1; dr <= 1; dr++) {
     for (let dc = -1; dc <= 1; dc++) {
@@ -147,6 +249,7 @@ function neighbors(row, col) {
       if (next) found.push(next);
     }
   }
+  if (origin) origin.nearby = found;
   return found;
 }
 
@@ -190,30 +293,34 @@ function startGame(firstCell) {
   }, 1000);
 }
 
-function reveal(cell) {
-  if (ended || cell.revealed || cell.flagged) return;
+function reveal(cell, deferDraw = false) {
+  if (ended || cell.revealed || cell.flagged) return [];
   if (!started) startGame(cell);
   if (cell.mine) {
     cell.revealed = true;
-    cell.el.classList.add("revealed");
-    cell.el.classList.add("mine", "exploded");
+    cell.exploded = true;
     finish(false);
-    return;
+    return [];
+  }
+
+  if (cell.adjacent) {
+    cell.revealed = true;
+    revealed++;
+    if (!deferDraw) drawCell(cell);
+    checkWin();
+    return [cell];
   }
 
   const queue = [cell];
   const queued = new Set(queue);
+  const changed = [];
   for (let index = 0; index < queue.length; index++) {
     const current = queue[index];
     if (current.revealed || current.flagged || current.mine) continue;
     current.revealed = true;
-    current.el.classList.add("revealed");
-    current.el.setAttribute("aria-label", current.adjacent ? `周围有 ${current.adjacent} 个雷` : "安全空格");
+    changed.push(current);
     revealed++;
-    if (current.adjacent) {
-      current.el.textContent = current.adjacent;
-      current.el.classList.add(`n${current.adjacent}`);
-    } else {
+    if (!current.adjacent) {
       neighbors(current.row, current.col).forEach(next => {
         if (!queued.has(next) && !next.revealed && !next.flagged && !next.mine) {
           queued.add(next);
@@ -222,23 +329,25 @@ function reveal(cell) {
       });
     }
   }
+  if (!deferDraw) changed.forEach(drawCell);
   checkWin();
+  return changed;
 }
 
 function toggleFlag(cell) {
   if (ended || cell.revealed) return;
   cell.flagged = !cell.flagged;
   flags += cell.flagged ? 1 : -1;
-  cell.el.classList.toggle("flagged", cell.flagged);
-  cell.el.setAttribute("aria-label", cell.flagged ? "已插旗" : "未翻开");
   mineCountEl.textContent = formatNumber(LEVELS[level].mines - flags);
+  drawCell(cell);
 }
 
 function chord(cell) {
   if (!cell.revealed || !cell.adjacent || ended) return;
   const around = neighbors(cell.row, cell.col);
   if (around.filter(item => item.flagged).length === cell.adjacent) {
-    around.forEach(reveal);
+    const changed = around.flatMap(item => reveal(item, true));
+    if (!ended) changed.forEach(drawCell);
   }
 }
 
@@ -265,19 +374,24 @@ function finish(won) {
   }
 
   cells.flat().forEach(cell => {
-    if (cell.mine && !cell.flagged) cell.el.classList.add("revealed", "mine");
-    if (!cell.mine && cell.flagged) cell.el.classList.add("wrong");
+    if (cell.mine && !cell.flagged) cell.revealed = true;
+    if (!cell.mine && cell.flagged) cell.wrong = true;
   });
+  renderBoard();
 }
 
-function getCell(target) {
-  const button = target.closest(".cell");
-  if (!button) return null;
-  return cells[Number(button.dataset.row)]?.[Number(button.dataset.col)];
+function getCell(event) {
+  const rect = boardEl.getBoundingClientRect();
+  const { cols, rows } = LEVELS[level];
+  const x = event.clientX - rect.left - boardEl.clientLeft;
+  const y = event.clientY - rect.top - boardEl.clientTop;
+  const col = Math.floor((x / (rect.width - boardEl.clientLeft * 2)) * cols);
+  const row = Math.floor((y / (rect.height - boardEl.clientTop * 2)) * rows);
+  return cells[row]?.[col] || null;
 }
 
 boardEl.addEventListener("click", event => {
-  const clickedCell = getCell(event.target);
+  const clickedCell = getCell(event);
   if (clickedCell && clickedCell === mouseHandledCell) {
     mouseHandledCell = null;
     return;
@@ -294,13 +408,13 @@ boardEl.addEventListener("click", event => {
 
 boardEl.addEventListener("contextmenu", event => {
   event.preventDefault();
-  const cell = getCell(event.target);
+  const cell = getCell(event);
   if (!cell) return;
   cell.revealed ? chord(cell) : toggleFlag(cell);
 });
 
 boardEl.addEventListener("pointerdown", event => {
-  const cell = getCell(event.target);
+  const cell = getCell(event);
   if (!cell) return;
   if (event.pointerType === "mouse") {
     if (event.button === 0) {
