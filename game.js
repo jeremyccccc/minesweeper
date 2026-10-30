@@ -285,6 +285,10 @@ boardEl.addEventListener("click", event => {
   if (longPressed) { longPressed = false; return; }
   const cell = clickedCell;
   if (!cell) return;
+  if (cell.flagged) {
+    toggleFlag(cell);
+    return;
+  }
   cell.revealed ? chord(cell) : reveal(cell);
 });
 
@@ -301,7 +305,8 @@ boardEl.addEventListener("pointerdown", event => {
   if (event.pointerType === "mouse") {
     if (event.button === 0) {
       mouseHandledCell = cell;
-      cell.revealed ? chord(cell) : reveal(cell);
+      if (cell.flagged) toggleFlag(cell);
+      else cell.revealed ? chord(cell) : reveal(cell);
     }
     return;
   }
