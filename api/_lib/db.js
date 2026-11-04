@@ -33,7 +33,25 @@ export function ensureSchema() {
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         PRIMARY KEY (player_id, level, period_key),
         CHECK (level IN ('easy', 'medium', 'hard')),
-        CHECK (seconds BETWEEN 0 AND 999)
+        CONSTRAINT best_scores_nonnegative_seconds CHECK (seconds >= 0)
+      )`;
+      // Remove the old 999-second limit without touching existing scores.
+      await sql`ALTER TABLE best_scores DROP CONSTRAINT IF EXISTS best_scores_seconds_check`;
+      await sql`DO $$ BEGIN
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint
+          WHERE conname = 'best_scores_nonnegative_seconds' AND conrelid = 'best_scores'::regclass) THEN
+          ALTER TABLE best_scores ADD CONSTRAINT best_scores_nonnegative_seconds CHECK (seconds >= 0);
+        END IF;
+      END $$`;
+      await sql`CREATE TABLE IF NOT EXISTS game_runs (
+        id UUID PRIMARY KEY,
+        player_id BIGINT NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+        level VARCHAR(10) NOT NULL CHECK (level IN ('easy', 'medium', 'hard')),
+        mine_indices JSONB NOT NULL,
+        issued_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        started_at TIMESTAMPTZ,
+        completed_at TIMESTAMPTZ,
+        score_seconds INTEGER CHECK (score_seconds >= 0)
       )`;
     })().catch(error => {
       schemaReady = undefined;

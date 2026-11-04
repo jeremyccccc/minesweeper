@@ -1,5 +1,7 @@
 import { currentPlayer } from "./_lib/auth.js";
 import { database, ensureSchema } from "./_lib/db.js";
+import { verifyReplay } from "../rules.js";
+import { validGameId } from "./games.js";
 
 const LEVELS = new Set(["easy", "medium", "hard"]);
 
@@ -28,15 +30,42 @@ export default async function handler(req, res) {
     if (req.method === "POST") {
       const player = await currentPlayer(req);
       if (!player) return res.status(401).json({ error: "请先登录" });
-      const level = String(req.body?.level || "");
-      const seconds = Number(req.body?.seconds);
-      if (!LEVELS.has(level) || !Number.isInteger(seconds) || seconds < 0 || seconds > 999) return res.status(400).json({ error: "成绩无效" });
-      const previous = await sql`SELECT seconds FROM best_scores WHERE player_id = ${player.id} AND level = ${level} AND period_key = 'all'`;
-      const isRecord = !previous[0] || seconds < previous[0].seconds;
-      await sql`INSERT INTO best_scores (player_id, level, period_key, seconds) VALUES (${player.id}, ${level}, 'all', ${seconds}) ON CONFLICT (player_id, level, period_key) DO UPDATE SET seconds = LEAST(best_scores.seconds, EXCLUDED.seconds), updated_at = CASE WHEN EXCLUDED.seconds < best_scores.seconds THEN NOW() ELSE best_scores.updated_at END`;
+      const gameId = req.body?.gameId;
+      if (!validGameId(gameId)) return res.status(400).json({ error: "成绩必须来自有效对局" });
+      const runs = await sql`SELECT level, mine_indices, started_at, completed_at, score_seconds,
+          issued_at > NOW() - INTERVAL '24 hours' AS valid
+        FROM game_runs WHERE id = ${gameId} AND player_id = ${player.id}`;
+      const run = runs[0];
+      if (!run || !run.valid || !run.started_at) return res.status(409).json({ error: "对局未开始或已过期，请重开" });
+      if (run.completed_at) return res.status(200).json({ ok: true, isRecord: false, seconds: run.score_seconds });
+      if (!verifyReplay(run.level, run.mine_indices, req.body?.moves)) {
+        return res.status(400).json({ error: "对局校验未通过，未记录成绩" });
+      }
+      // Claim the run and update both rankings in ONE atomic SQL statement.
+      // Time is measured by the server; submitted seconds are never trusted.
       const week = weekKey();
-      await sql`INSERT INTO best_scores (player_id, level, period_key, seconds) VALUES (${player.id}, ${level}, ${week}, ${seconds}) ON CONFLICT (player_id, level, period_key) DO UPDATE SET seconds = LEAST(best_scores.seconds, EXCLUDED.seconds), updated_at = CASE WHEN EXCLUDED.seconds < best_scores.seconds THEN NOW() ELSE best_scores.updated_at END`;
-      return res.status(200).json({ ok: true, isRecord });
+      const rows = await sql`WITH claimed AS (
+        UPDATE game_runs SET completed_at = NOW(),
+          score_seconds = GREATEST(1, CEIL(EXTRACT(EPOCH FROM (NOW() - started_at))))::integer
+        WHERE id = ${gameId} AND player_id = ${player.id} AND completed_at IS NULL
+          AND started_at IS NOT NULL
+        RETURNING player_id, level, score_seconds
+      ), previous AS (
+        SELECT s.seconds FROM best_scores s
+        WHERE s.player_id = ${player.id} AND s.level = ${run.level} AND s.period_key = 'all'
+      ), saved AS (
+        INSERT INTO best_scores (player_id, level, period_key, seconds)
+        SELECT c.player_id, c.level, p.period, c.score_seconds
+        FROM claimed c CROSS JOIN (VALUES ('all'), (${week})) AS p(period)
+        ON CONFLICT (player_id, level, period_key) DO UPDATE SET
+          seconds = LEAST(best_scores.seconds, EXCLUDED.seconds),
+          updated_at = CASE WHEN EXCLUDED.seconds < best_scores.seconds THEN NOW() ELSE best_scores.updated_at END
+        RETURNING seconds
+      ) SELECT c.score_seconds AS seconds,
+          NOT EXISTS (SELECT 1 FROM previous WHERE seconds <= c.score_seconds) AS "isRecord"
+        FROM claimed c WHERE EXISTS (SELECT 1 FROM saved)`;
+      if (!rows.length) return res.status(409).json({ error: "成绩正在处理，请稍后刷新排行榜" });
+      return res.status(200).json({ ok: true, isRecord: rows[0].isRecord, seconds: rows[0].seconds });
     }
     return res.status(405).json({ error: "不支持此请求" });
   } catch (error) {

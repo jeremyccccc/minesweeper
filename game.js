@@ -1,10 +1,4 @@
-"use strict";
-
-const LEVELS = {
-  easy: { rows: 9, cols: 9, mines: 10, size: 38 },
-  medium: { rows: 16, cols: 16, mines: 40, size: 32 },
-  hard: { rows: 16, cols: 30, mines: 99, size: 28 }
-};
+import { LEVELS, createGame, applyAction, canChord } from "./rules.js";
 
 const boardEl = document.querySelector("#board");
 const boardContext = boardEl.getContext("2d", { alpha: false });
@@ -34,15 +28,17 @@ let started = false;
 let ended = false;
 let seconds = 0;
 let timerId = null;
-let flags = 0;
-let revealed = 0;
 let pressTimer = null;
-let longPressed = false;
-let mouseHandledCell = null;
-let rightMouseHandledCell = null;
 let pressedCells = [];
 let activeUser = "";
 let rankingRange = "week";
+let gameState;
+let roundId = 0;
+let round;
+let startedAt = 0;
+let rankingRequest = 0;
+let rankingController;
+let touchPress = null;
 
 async function api(path, options = {}) {
   const response = await fetch(path, {
@@ -54,11 +50,41 @@ async function api(path, options = {}) {
   return data;
 }
 
-async function saveWinningScore(time) {
-  if (!activeUser) return false;
-  const data = await api("/api/scores", { method: "POST", body: JSON.stringify({ level, seconds: time }) });
-  renderRanking();
-  return data.isRecord;
+async function saveWinningScore(snapshot) {
+  await snapshot.startPromise;
+  return api("/api/scores", {
+    method: "POST",
+    body: JSON.stringify({ gameId: snapshot.gameId, moves: snapshot.moves })
+  });
+}
+
+async function prepareRankedGame() {
+  const pendingRound = round;
+  if (!started && pendingRound.player !== activeUser) {
+    pendingRound.gameId = null;
+    pendingRound.player = "";
+  }
+  if (!activeUser || pendingRound.preparing || pendingRound.gameId || pendingRound.moves.length || started) return;
+  pendingRound.preparing = true;
+  const player = activeUser;
+  statusEl.textContent = "正在连接排行榜，可直接开始练习";
+  try {
+    const data = await api("/api/games", { method: "POST", body: JSON.stringify({ action: "new", level }) });
+    if (round !== pendingRound || activeUser !== player || started || pendingRound.moves.length) return;
+    gameState = createGame(level, data.mines);
+    cells = gameState.cells;
+    pendingRound.gameId = data.gameId;
+    pendingRound.player = player;
+    statusEl.textContent = "点击任意格子开始 · 本局可记录成绩";
+  } catch {
+    // Local play is always available even when the score service is offline.
+    if (round === pendingRound && activeUser === player && !started && !pendingRound.moves.length) {
+      statusEl.textContent = "点击任意格子开始 · 排行榜暂未连接，本局为练习";
+    }
+  } finally {
+    pendingRound.preparing = false;
+    if (round === pendingRound && activeUser && activeUser !== player) prepareRankedGame();
+  }
 }
 
 function renderAccount() {
@@ -67,7 +93,12 @@ function renderAccount() {
 }
 
 async function renderRanking() {
-  rankingLevelEl.textContent = LEVEL_NAMES[level];
+  const request = ++rankingRequest;
+  const requestedLevel = level;
+  const requestedRange = rankingRange;
+  rankingController?.abort();
+  rankingController = new AbortController();
+  rankingLevelEl.textContent = LEVEL_NAMES[requestedLevel];
   rankingListEl.replaceChildren();
   const loading = document.createElement("li");
   loading.className = "empty";
@@ -75,9 +106,11 @@ async function renderRanking() {
   rankingListEl.append(loading);
   let rows;
   try {
-    const data = await api(`/api/scores?level=${level}&range=${rankingRange}`);
+    const data = await api(`/api/scores?level=${requestedLevel}&range=${requestedRange}`, { signal: rankingController.signal });
+    if (request !== rankingRequest) return;
     rows = data.scores.map(row => ({ name: row.username, time: row.seconds }));
   } catch (error) {
+    if (request !== rankingRequest || error.name === "AbortError") return;
     loading.textContent = error.message === "数据库尚未连接" ? "部署后连接数据库即可启用排行榜" : error.message;
     return;
   }
@@ -85,7 +118,7 @@ async function renderRanking() {
   if (!rows.length) {
     const empty = document.createElement("li");
     empty.className = "empty";
-    empty.textContent = rankingRange === "week" ? "本周还没有成绩，来拿下第一名吧" : "还没有历史成绩";
+    empty.textContent = requestedRange === "week" ? "本周还没有成绩，来拿下第一名吧" : "还没有历史成绩";
     rankingListEl.append(empty);
     return;
   }
@@ -226,7 +259,7 @@ function drawCell(cell) {
 
 function showPressPreview(cell) {
   clearPressPreview();
-  if (!cell.revealed || !cell.adjacent) return;
+  if (ended || !cell.revealed || !cell.adjacent) return;
   const around = neighbors(cell.row, cell.col);
   if (canChord(cell, around)) return;
   pressedCells = around.filter(item => !item.revealed && !item.flagged);
@@ -253,18 +286,17 @@ function renderBoard() {
 
 function initGame() {
   clearInterval(timerId);
+  clearTimeout(pressTimer);
+  touchPress = null;
+  round = { id: ++roundId, level, moves: [], gameId: null, player: "", startPromise: null };
   const config = LEVELS[level];
   started = false;
   ended = false;
   seconds = 0;
-  flags = 0;
-  revealed = 0;
+  startedAt = 0;
   pressedCells = [];
-  cells = Array.from({ length: config.rows }, (_, row) =>
-    Array.from({ length: config.cols }, (_, col) => ({ row, col, mine: false, adjacent: 0, revealed: false, flagged: false }))
-  );
-  cells.flat().forEach(cell => neighbors(cell.row, cell.col));
-  generateMinefield();
+  gameState = createGame(level);
+  cells = gameState.cells;
   timerEl.textContent = "000";
   mineCountEl.textContent = formatNumber(config.mines);
   resetEl.textContent = "🙂";
@@ -280,142 +312,72 @@ function initGame() {
   boardContext.imageSmoothingEnabled = false;
   buildTileSprites(config.size, pixelRatio);
   renderBoard();
+  prepareRankedGame();
 }
 
 function neighbors(row, col) {
-  const origin = cells[row]?.[col];
-  if (origin?.nearby) return origin.nearby;
-  const found = [];
-  for (let dr = -1; dr <= 1; dr++) {
-    for (let dc = -1; dc <= 1; dc++) {
-      if (dr === 0 && dc === 0) continue;
-      const next = cells[row + dr]?.[col + dc];
-      if (next) found.push(next);
-    }
-  }
-  if (origin) origin.nearby = found;
-  return found;
+  return cells[row]?.[col]?.nearby || [];
 }
 
-function recalculateNumbers() {
-  cells.flat().forEach(cell => { cell.adjacent = 0; });
-  cells.flat().filter(cell => cell.mine).forEach(mine => {
-    neighbors(mine.row, mine.col).forEach(cell => { cell.adjacent++; });
-  });
+function updateTimer() {
+  if (!started || ended) return;
+  seconds = Math.floor(Math.max(0, performance.now() - startedAt) / 1000);
+  timerEl.textContent = String(seconds).padStart(3, "0");
 }
 
-function generateMinefield() {
-  const { mines } = LEVELS[level];
-  const choices = cells.flat();
-  for (let i = choices.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [choices[i], choices[j]] = [choices[j], choices[i]];
-  }
-  choices.slice(0, mines).forEach(cell => { cell.mine = true; });
-  recalculateNumbers();
-}
-
-function makeFirstClickSafe(safeCell) {
-  const safeZone = new Set([safeCell, ...neighbors(safeCell.row, safeCell.col)]);
-  const minesToMove = [...safeZone].filter(cell => cell.mine);
-  if (!minesToMove.length) return;
-  const destinations = cells.flat().filter(cell => !safeZone.has(cell) && !cell.mine);
-  minesToMove.forEach((mine, index) => {
-    mine.mine = false;
-    destinations[index].mine = true;
-  });
-  recalculateNumbers();
-}
-
-function startGame(firstCell) {
-  makeFirstClickSafe(firstCell);
+function startGame() {
   started = true;
-  statusEl.textContent = "游戏进行中";
-  timerId = setInterval(() => {
-    seconds = Math.min(999, seconds + 1);
-    timerEl.textContent = formatNumber(seconds);
-  }, 1000);
-}
-
-function reveal(cell, deferDraw = false) {
-  if (ended || cell.revealed || cell.flagged) return [];
-  if (!started) startGame(cell);
-  if (cell.mine) {
-    cell.revealed = true;
-    cell.exploded = true;
-    finish(false);
-    return [];
+  startedAt = performance.now();
+  const ranked = round.gameId && round.player === activeUser;
+  statusEl.textContent = activeUser && !ranked ? "游戏进行中 · 本局为练习，重开可重试连接排行榜" : "游戏进行中";
+  if (ranked) {
+    round.startPromise = api("/api/games", {
+      method: "POST", body: JSON.stringify({ action: "start", gameId: round.gameId })
+    });
+    // Register a rejection handler now; the original promise is still checked at submission.
+    round.startPromise.catch(() => {});
   }
-
-  if (cell.adjacent) {
-    cell.revealed = true;
-    revealed++;
-    if (!deferDraw) drawCell(cell);
-    checkWin();
-    return [cell];
-  }
-
-  const queue = [cell];
-  const queued = new Set(queue);
-  const changed = [];
-  for (let index = 0; index < queue.length; index++) {
-    const current = queue[index];
-    if (current.revealed || current.flagged || current.mine) continue;
-    current.revealed = true;
-    changed.push(current);
-    revealed++;
-    if (!current.adjacent) {
-      neighbors(current.row, current.col).forEach(next => {
-        if (!queued.has(next) && !next.revealed && !next.flagged && !next.mine) {
-          queued.add(next);
-          queue.push(next);
-        }
-      });
-    }
-  }
-  if (!deferDraw) changed.forEach(drawCell);
-  checkWin();
-  return changed;
+  timerId = setInterval(updateTimer, 200);
 }
 
-function toggleFlag(cell) {
-  if (ended || cell.revealed) return;
-  cell.flagged = !cell.flagged;
-  flags += cell.flagged ? 1 : -1;
-  mineCountEl.textContent = formatNumber(LEVELS[level].mines - flags);
-  drawCell(cell);
+function performAction(type, cell) {
+  if (ended) return;
+  clearPressPreview();
+  const action = { type, index: cell.index };
+  round.moves.push(action);
+  const changed = applyAction(gameState, action);
+  if (!started && gameState.started) startGame();
+  mineCountEl.textContent = formatNumber(LEVELS[level].mines - gameState.flags);
+  if (gameState.ended) finish(gameState.won);
+  else changed.forEach(drawCell);
 }
 
-function chord(cell) {
-  if (!cell.revealed || !cell.adjacent || ended) return;
-  const around = neighbors(cell.row, cell.col);
-  if (canChord(cell, around)) {
-    const changed = around.flatMap(item => reveal(item, true));
-    if (!ended) changed.forEach(drawCell);
-  }
-}
-
-function canChord(cell, around = neighbors(cell.row, cell.col)) {
-  return cell.revealed && cell.adjacent && around.filter(item => item.flagged).length === cell.adjacent;
-}
-
-function checkWin() {
-  const config = LEVELS[level];
-  if (!ended && revealed === config.rows * config.cols - config.mines) finish(true);
-}
+function reveal(cell) { performAction("reveal", cell); }
+function toggleFlag(cell) { performAction("flag", cell); }
+function chord(cell) { performAction("chord", cell); }
 
 function finish(won) {
+  updateTimer();
   ended = true;
   clearInterval(timerId);
+  const finishedRound = round;
+  const finishedTime = seconds;
+  const finishedUser = activeUser;
+  const stillCurrent = () => round === finishedRound && activeUser === finishedUser;
   resetEl.textContent = won ? "😎" : "😵";
   if (won) {
-    if (activeUser) {
-      statusEl.textContent = `完成！用时 ${seconds} 秒 · 正在同步成绩…`;
-      saveWinningScore(seconds).then(isRecord => {
-        statusEl.textContent = `完成！用时 ${seconds} 秒${isRecord ? " · 新的历史最佳！" : " · 已同步"}`;
-      }).catch(error => { statusEl.textContent = `完成！用时 ${seconds} 秒 · ${error.message}`; });
+    if (activeUser && finishedRound.gameId && finishedRound.player === activeUser) {
+      const snapshot = { ...finishedRound, moves: finishedRound.moves.map(move => ({ ...move })) };
+      statusEl.textContent = `完成！用时 ${finishedTime} 秒 · 正在同步成绩…`;
+      saveWinningScore(snapshot).then(data => {
+        if (activeUser === finishedUser) renderRanking();
+        if (!stillCurrent()) return;
+        statusEl.textContent = `完成！用时 ${finishedTime} 秒 · 排行计时 ${data.seconds} 秒${data.isRecord ? " · 新的历史最佳！" : " · 已同步"}`;
+      }).catch(error => {
+        if (stillCurrent()) statusEl.textContent = `完成！用时 ${finishedTime} 秒 · 成绩未同步：${error.message}`;
+      });
     } else {
-      statusEl.textContent = `完成！用时 ${seconds} 秒 · 登录后可记录成绩`;
+      statusEl.textContent = `完成！用时 ${finishedTime} 秒 · ${activeUser ? "本局练习未计入排名，重开可重试连接" : "登录后可记录下一局成绩"}`;
     }
   } else {
     statusEl.textContent = "踩到雷了，再试一次吧";
@@ -439,13 +401,9 @@ function getCell(event) {
 }
 
 boardEl.addEventListener("click", event => {
-  const clickedCell = getCell(event);
-  if (clickedCell && clickedCell === mouseHandledCell) {
-    mouseHandledCell = null;
-    return;
-  }
-  if (longPressed) { longPressed = false; return; }
-  const cell = clickedCell;
+  // Physical mouse/touch actions are handled exclusively by pointer events.
+  if (event.detail !== 0 || ended) return;
+  const cell = getCell(event);
   if (!cell) return;
   if (cell.flagged) {
     toggleFlag(cell);
@@ -456,53 +414,64 @@ boardEl.addEventListener("click", event => {
 
 boardEl.addEventListener("contextmenu", event => {
   event.preventDefault();
-  clearPressPreview();
-  const cell = getCell(event);
-  if (!cell) return;
-  if (cell === rightMouseHandledCell) {
-    rightMouseHandledCell = null;
-    return;
-  }
-  cell.revealed ? chord(cell) : toggleFlag(cell);
 });
 
 boardEl.addEventListener("pointerdown", event => {
   const cell = getCell(event);
-  if (!cell) return;
-  if (event.pointerType === "mouse") {
+  if (!cell || ended) return;
+  if (event.pointerType !== "touch") {
     if (event.button === 0) {
-      mouseHandledCell = cell;
       if (cell.flagged) toggleFlag(cell);
       else if (!cell.revealed) reveal(cell);
       else if (canChord(cell)) chord(cell);
       else showPressPreview(cell);
     } else if (event.button === 2) {
-      rightMouseHandledCell = cell;
       if (!cell.revealed) toggleFlag(cell);
       else if (canChord(cell)) chord(cell);
       else showPressPreview(cell);
     }
     return;
   }
-  longPressed = false;
+  if (touchPress || event.isPrimary === false) return;
+  const gesture = { id: event.pointerId, round, cell, x: event.clientX, y: event.clientY, long: false, cancelled: false };
+  touchPress = gesture;
   pressTimer = setTimeout(() => {
-    longPressed = true;
+    if (touchPress !== gesture || round !== gesture.round || gesture.cancelled) return;
+    gesture.long = true;
     toggleFlag(cell);
     navigator.vibrate?.(35);
   }, 480);
 });
 
+boardEl.addEventListener("pointermove", event => {
+  if (!touchPress || touchPress.id !== event.pointerId) return;
+  if (Math.hypot(event.clientX - touchPress.x, event.clientY - touchPress.y) > 8) {
+    touchPress.cancelled = true;
+    clearTimeout(pressTimer);
+  }
+});
+
 ["pointerup", "pointercancel", "pointerleave"].forEach(type => {
   boardEl.addEventListener(type, event => {
-    clearTimeout(pressTimer);
-    if (event.pointerType !== "mouse") return;
     clearPressPreview();
-    if (type !== "pointerup") {
-      mouseHandledCell = null;
-      rightMouseHandledCell = null;
+    if (event.pointerType !== "touch" || !touchPress || touchPress.id !== event.pointerId) return;
+    clearTimeout(pressTimer);
+    const gesture = touchPress;
+    touchPress = null;
+    if (type === "pointerup" && !gesture.long && !gesture.cancelled && round === gesture.round && getCell(event) === gesture.cell) {
+      const cell = gesture.cell;
+      if (cell.flagged) toggleFlag(cell);
+      else cell.revealed ? chord(cell) : reveal(cell);
     }
   });
 });
+
+window.addEventListener("blur", () => {
+  clearPressPreview();
+  clearTimeout(pressTimer);
+  touchPress = null;
+});
+document.addEventListener("visibilitychange", updateTimer);
 
 resetEl.addEventListener("click", initGame);
 levelButtons.forEach(button => {
@@ -536,6 +505,7 @@ loginFormEl.addEventListener("submit", async event => {
     const data = await api("/api/auth", { method: "POST", body: JSON.stringify({ username: name, password, action: event.submitter?.dataset.action || "login" }) });
     activeUser = data.user.username;
     renderAccount();
+    prepareRankedGame();
     renderRanking();
     loginDialogEl.close();
   } catch (error) { loginErrorEl.textContent = error.message; }
@@ -546,6 +516,10 @@ logoutEl.addEventListener("click", async () => {
   activeUser = "";
   renderAccount();
   renderRanking();
+  if (!started) {
+    round.gameId = null;
+    round.player = "";
+  }
   loginDialogEl.close();
 });
 
@@ -563,6 +537,7 @@ async function initializeOnlineFeatures() {
     activeUser = data.user?.username || "";
   } catch { activeUser = ""; }
   renderAccount();
+  prepareRankedGame();
   renderRanking();
 }
 
