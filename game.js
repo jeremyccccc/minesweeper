@@ -67,22 +67,28 @@ async function prepareRankedGame() {
   if (!activeUser || pendingRound.preparing || pendingRound.gameId || pendingRound.moves.length || started) return;
   pendingRound.preparing = true;
   const player = activeUser;
-  statusEl.textContent = "正在连接排行榜，可直接开始练习";
+  statusEl.textContent = "正在准备可计分棋盘…";
   try {
     const data = await api("/api/games", { method: "POST", body: JSON.stringify({ action: "new", level }) });
-    if (round !== pendingRound || activeUser !== player || started || pendingRound.moves.length) return;
+    if (round !== pendingRound || activeUser !== player) return;
     gameState = createGame(level, data.mines);
     cells = gameState.cells;
     pendingRound.gameId = data.gameId;
     pendingRound.player = player;
     statusEl.textContent = "点击任意格子开始 · 本局可记录成绩";
+    renderBoard();
   } catch {
-    // Local play is always available even when the score service is offline.
-    if (round === pendingRound && activeUser === player && !started && !pendingRound.moves.length) {
-      statusEl.textContent = "点击任意格子开始 · 排行榜暂未连接，本局为练习";
+    if (round === pendingRound && activeUser === player) {
+      statusEl.textContent = "排行榜暂未连接，本局为练习";
     }
   } finally {
     pendingRound.preparing = false;
+    if (round === pendingRound) {
+      const queued = pendingRound.pendingActions.splice(0);
+      queued.forEach(action => {
+        if (!ended && activeUser === player) performAction(action.type, cells.flat()[action.index]);
+      });
+    }
     if (round === pendingRound && activeUser && activeUser !== player) prepareRankedGame();
   }
 }
@@ -288,7 +294,7 @@ function initGame() {
   clearInterval(timerId);
   clearTimeout(pressTimer);
   touchPress = null;
-  round = { id: ++roundId, level, moves: [], gameId: null, player: "", startPromise: null };
+  round = { id: ++roundId, level, moves: [], pendingActions: [], gameId: null, player: "", startPromise: null };
   const config = LEVELS[level];
   started = false;
   ended = false;
@@ -344,6 +350,11 @@ function performAction(type, cell) {
   if (ended) return;
   clearPressPreview();
   const action = { type, index: cell.index };
+  if (round.preparing && activeUser && !round.gameId) {
+    if (round.pendingActions.length < 1000) round.pendingActions.push(action);
+    statusEl.textContent = "正在准备可计分棋盘，操作已收到…";
+    return;
+  }
   round.moves.push(action);
   const changed = applyAction(gameState, action);
   if (!started && gameState.started) startGame();

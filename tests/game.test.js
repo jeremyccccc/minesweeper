@@ -214,21 +214,47 @@ test("late score upload cannot replace the new round's status", async () => {
   run("initGame(); reveal(cells[0][0]); statusEl.textContent='新一局进行中'");
   score.resolve(response({ seconds: 22, isRecord: true }));
   await new Promise(resolve => setImmediate(resolve));
-  assert.equal(run("statusEl.textContent"), "新一局进行中");
+  assert.equal(run("statusEl.textContent"), "游戏进行中");
   assert.equal(submitted.gameId, "00000000-0000-4000-8000-000000000002");
   assert.equal("seconds" in submitted, false);
 });
 
-test("late ranked-board preparation never replaces a game already in progress", async () => {
+test("fast reveal waits for the ranked board and then starts the same ranked round", async () => {
   const pending = deferred();
   const { run } = browser(() => pending.promise);
   const preparing = run("activeUser='alice'; prepareRankedGame()");
-  run("reveal(cells[0][0]); globalThis.originalBoard=gameState");
+  run("reveal(cells[0][0])");
+  assert.equal(run("started"), false);
+  assert.equal(run("round.pendingActions.length"), 1);
   pending.resolve(response({ gameId: "00000000-0000-4000-8000-000000000001", mines }));
   await preparing;
-  assert.equal(run("gameState === originalBoard"), true);
-  assert.equal(run("round.gameId"), null);
+  assert.equal(run("round.gameId"), "00000000-0000-4000-8000-000000000001");
   assert.equal(run("gameState.started"), true);
+  assert.equal(run("round.moves.length"), 1);
+  assert.equal(run("round.pendingActions.length"), 0);
+});
+
+test("flags placed before board creation are replayed on the ranked board", async () => {
+  const pending = deferred();
+  const { run } = browser(() => pending.promise);
+  const preparing = run("activeUser='alice'; prepareRankedGame()");
+  run("toggleFlag(cells[8][8]); reveal(cells[0][0])");
+  pending.resolve(response({ gameId: "00000000-0000-4000-8000-000000000001", mines }));
+  await preparing;
+  assert.equal(run("cells[8][8].flagged"), true);
+  assert.equal(run("round.moves.length"), 2);
+  assert.equal(run("round.startPromise !== null"), true);
+});
+
+test("reset discards queued input and ignores an old board response", async () => {
+  const pending = deferred();
+  const { run } = browser(() => pending.promise);
+  const preparing = run("activeUser='alice'; prepareRankedGame()");
+  run("reveal(cells[0][0]); initGame()");
+  pending.resolve(response({ gameId: "00000000-0000-4000-8000-000000000001", mines }));
+  await preparing;
+  assert.equal(run("round.moves.length"), 0);
+  assert.equal(run("started"), false);
 });
 
 function scoreEndpoint(rows, player = { id: 7 }) {
