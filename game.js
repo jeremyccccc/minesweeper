@@ -66,7 +66,7 @@ async function prepareRankedGame() {
     pendingRound.gameId = null;
     pendingRound.player = "";
   }
-  if (!activeUser || pendingRound.preparing || pendingRound.gameId || pendingRound.moves.length || started) return;
+  if (!activeUser || pendingRound.preparing || pendingRound.retryTimer || pendingRound.gameId || pendingRound.moves.length || started) return;
   pendingRound.preparing = true;
   const player = activeUser;
   statusEl.textContent = "正在准备可计分棋盘…";
@@ -79,13 +79,19 @@ async function prepareRankedGame() {
     pendingRound.player = player;
     statusEl.textContent = "点击任意格子开始 · 本局可记录成绩";
     renderBoard();
-  } catch {
+  } catch (error) {
     if (round === pendingRound && activeUser === player) {
-      statusEl.textContent = "排行榜暂未连接，本局为练习";
+      pendingRound.retryCount = (pendingRound.retryCount || 0) + 1;
+      const delay = Math.min(5000, 500 * 2 ** Math.min(pendingRound.retryCount - 1, 4));
+      statusEl.textContent = `计分棋盘连接失败，${Math.ceil(delay / 1000)} 秒后重试；操作已保留`;
+      pendingRound.retryTimer = setTimeout(() => {
+        pendingRound.retryTimer = null;
+        if (round === pendingRound && activeUser === player) prepareRankedGame();
+      }, delay);
     }
   } finally {
     pendingRound.preparing = false;
-    if (round === pendingRound && activeUser === player) flushPendingActions(pendingRound);
+    if (round === pendingRound && activeUser === player && pendingRound.gameId) flushPendingActions(pendingRound);
     if (round === pendingRound && activeUser && activeUser !== player) prepareRankedGame();
   }
 }
@@ -298,6 +304,7 @@ function renderBoard() {
 function initGame() {
   clearInterval(timerId);
   clearTimeout(pressTimer);
+  clearTimeout(round?.retryTimer);
   touchPress = null;
   round = { id: ++roundId, level, moves: [], pendingActions: [], gameId: null, player: "", startPromise: null };
   const config = LEVELS[level];
@@ -355,9 +362,11 @@ function performAction(type, cell) {
   if (ended) return;
   clearPressPreview();
   const action = { type, index: cell.index };
-  if (!authReady || (round.preparing && activeUser && !round.gameId)) {
+  if (!authReady || (activeUser && !round.gameId)) {
     if (round.pendingActions.length < 1000) round.pendingActions.push(action);
-    statusEl.textContent = authReady ? "正在准备可计分棋盘，操作已收到…" : "正在确认登录状态，操作已收到…";
+    if (!authReady) statusEl.textContent = "正在确认登录状态，操作已收到…";
+    else if (!round.retryTimer) statusEl.textContent = "正在准备可计分棋盘，操作已收到…";
+    if (authReady && !round.preparing && !round.retryTimer) prepareRankedGame();
     return;
   }
   round.moves.push(action);

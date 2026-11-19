@@ -271,6 +271,26 @@ test("flags placed before board creation are replayed on the ranked board", asyn
   assert.equal(run("round.startPromise !== null"), true);
 });
 
+test("failed board request keeps logged-in moves queued until retry succeeds", async () => {
+  let attempts = 0;
+  const { run } = browser(path => {
+    if (path !== "/api/games") return Promise.resolve(response({ scores: [] }));
+    if (++attempts === 1) return Promise.reject(new Error("temporary network failure"));
+    return Promise.resolve(response({ gameId: "00000000-0000-4000-8000-000000000001", mines }));
+  });
+  const first = run("activeUser='alice'; prepareRankedGame()");
+  run("reveal(cells[0][0])");
+  await first;
+  assert.equal(run("started"), false);
+  assert.equal(run("round.pendingActions.length"), 1);
+  assert.equal(run("statusEl.textContent.includes('练习')"), false);
+  const retry = run("round.retryTimer=null; prepareRankedGame()");
+  await retry;
+  assert.equal(run("gameState.started"), true);
+  assert.equal(run("round.gameId"), "00000000-0000-4000-8000-000000000001");
+  assert.equal(run("round.moves.length"), 1);
+});
+
 test("reset discards queued input and ignores an old board response", async () => {
   const pending = deferred();
   const { run } = browser(() => pending.promise);
