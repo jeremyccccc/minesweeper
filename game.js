@@ -31,6 +31,7 @@ let timerId = null;
 let pressTimer = null;
 let pressedCells = [];
 let activeUser = "";
+let authReady = false;
 let rankingRange = "week";
 let gameState;
 let roundId = 0;
@@ -60,6 +61,7 @@ async function saveWinningScore(snapshot) {
 
 async function prepareRankedGame() {
   const pendingRound = round;
+  if (!authReady) return;
   if (!started && pendingRound.player !== activeUser) {
     pendingRound.gameId = null;
     pendingRound.player = "";
@@ -83,14 +85,17 @@ async function prepareRankedGame() {
     }
   } finally {
     pendingRound.preparing = false;
-    if (round === pendingRound) {
-      const queued = pendingRound.pendingActions.splice(0);
-      queued.forEach(action => {
-        if (!ended && activeUser === player) performAction(action.type, cells.flat()[action.index]);
-      });
-    }
+    if (round === pendingRound && activeUser === player) flushPendingActions(pendingRound);
     if (round === pendingRound && activeUser && activeUser !== player) prepareRankedGame();
   }
+}
+
+function flushPendingActions(targetRound) {
+  if (round !== targetRound) return;
+  const queued = targetRound.pendingActions.splice(0);
+  queued.forEach(action => {
+    if (!ended && round === targetRound) performAction(action.type, cells.flat()[action.index]);
+  });
 }
 
 function renderAccount() {
@@ -350,9 +355,9 @@ function performAction(type, cell) {
   if (ended) return;
   clearPressPreview();
   const action = { type, index: cell.index };
-  if (round.preparing && activeUser && !round.gameId) {
+  if (!authReady || (round.preparing && activeUser && !round.gameId)) {
     if (round.pendingActions.length < 1000) round.pendingActions.push(action);
-    statusEl.textContent = "正在准备可计分棋盘，操作已收到…";
+    statusEl.textContent = authReady ? "正在准备可计分棋盘，操作已收到…" : "正在确认登录状态，操作已收到…";
     return;
   }
   round.moves.push(action);
@@ -515,6 +520,7 @@ loginFormEl.addEventListener("submit", async event => {
   try {
     const data = await api("/api/auth", { method: "POST", body: JSON.stringify({ username: name, password, action: event.submitter?.dataset.action || "login" }) });
     activeUser = data.user.username;
+    authReady = true;
     renderAccount();
     prepareRankedGame();
     renderRanking();
@@ -525,6 +531,7 @@ loginFormEl.addEventListener("submit", async event => {
 logoutEl.addEventListener("click", async () => {
   try { await api("/api/auth", { method: "DELETE" }); } catch { /* Clear local state even if the network is unavailable. */ }
   activeUser = "";
+  authReady = true;
   renderAccount();
   renderRanking();
   if (!started) {
@@ -547,8 +554,10 @@ async function initializeOnlineFeatures() {
     const data = await api("/api/auth");
     activeUser = data.user?.username || "";
   } catch { activeUser = ""; }
+  authReady = true;
   renderAccount();
-  prepareRankedGame();
+  if (activeUser) prepareRankedGame();
+  else flushPendingActions(round);
   renderRanking();
 }
 

@@ -149,6 +149,7 @@ function browser(fetcher = async () => response({ scores: [], mines, gameId: "00
   vm.runInContext(source, context);
   const run = source => vm.runInContext(source, context);
   run("initGame()");
+  run("authReady = true");
   return { run, clock, elements, context };
 }
 
@@ -232,6 +233,30 @@ test("fast reveal waits for the ranked board and then starts the same ranked rou
   assert.equal(run("gameState.started"), true);
   assert.equal(run("round.moves.length"), 1);
   assert.equal(run("round.pendingActions.length"), 0);
+});
+
+test("click before login status resolves still uses the ranked board", async () => {
+  const auth = deferred();
+  const requests = [];
+  const { run } = browser((path, options) => {
+    requests.push({ path, body: options?.body && JSON.parse(options.body) });
+    if (path === "/api/auth") return auth.promise;
+    if (path === "/api/games") return Promise.resolve(response({
+      gameId: "00000000-0000-4000-8000-000000000001", mines, ok: true
+    }));
+    return Promise.resolve(response({ scores: [] }));
+  });
+  run("authReady = false; initGame()");
+  const initializing = run("initializeOnlineFeatures()");
+  run("toggleFlag(cells[8][8]); reveal(cells[0][0])");
+  assert.equal(run("started"), false);
+  auth.resolve(response({ user: { username: "alice" } }));
+  await initializing;
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(run("round.gameId"), "00000000-0000-4000-8000-000000000001");
+  assert.equal(run("round.moves.length"), 2);
+  assert.equal(run("gameState.started"), true);
+  assert.equal(requests.some(item => item.body?.action === "start"), true);
 });
 
 test("flags placed before board creation are replayed on the ranked board", async () => {
